@@ -44,6 +44,7 @@ public static class PlayGoExports
     private static PlayGoMetadata _metadata = PlayGoMetadata.Empty;
     private static int _installSpeed = PlayGoInstallSpeedTrickle;
     private static ulong _languageMask = ulong.MaxValue;
+    private static int _unknownChunkDiagnostics;
 
     [SysAbiExport(
         Nid = "ts6GlZOKRrE",
@@ -390,10 +391,18 @@ public static class PlayGoExports
 
             if (!IsKnownChunkId(chunkId))
             {
-                loci[i] = PlayGoLocusNotDownloaded;
-                return ctx.Memory.TryWrite(outLoci, loci)
-                    ? OrbisPlayGoErrorBadChunkId
-                    : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                if (Interlocked.Increment(ref _unknownChunkDiagnostics) <= 8)
+                {
+                    ushort[] knownChunkIds;
+                    lock (_stateGate)
+                    {
+                        knownChunkIds = _metadata.ChunkIds;
+                    }
+
+                    Console.Error.WriteLine(
+                        $"[LOADER][TRACE] playgo.unknown_chunk_id id={chunkId} entries={numberOfEntries} " +
+                        $"known=[{string.Join(',', knownChunkIds)}]");
+                }
             }
 
             loci[i] = PlayGoLocusLocalFast;
@@ -624,10 +633,7 @@ public static class PlayGoExports
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
 
-            if (!IsKnownChunkId(chunkId))
-            {
-                return OrbisPlayGoErrorBadChunkId;
-            }
+            _ = chunkId;
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;

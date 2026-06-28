@@ -23,6 +23,8 @@ public static class AmprExports
     private const uint KernelEventQueueRecordType = 2;
     private const uint WriteAddressRecordType = 3;
     private static readonly ConcurrentDictionary<ulong, CommandBufferState> _commandBuffers = new();
+    private static readonly bool _traceAmpr =
+        string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AMPR"), "1", StringComparison.Ordinal);
 
     private sealed class CommandBufferState
     {
@@ -355,24 +357,26 @@ public static class AmprExports
         var commandBuffer = ctx[CpuRegister.Rdi];
         var equeue = ctx[CpuRegister.Rsi];
         var ident = ctx[CpuRegister.Rdx];
-        var filter = ctx[CpuRegister.Rcx];
+        var completionToken = ctx[CpuRegister.Rcx];
         var userData = ctx[CpuRegister.R8];
-        var data = ctx[CpuRegister.R9];
 
         if (commandBuffer == 0)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var extra = 0UL;
-        _ = ctx.TryReadUInt64(ctx[CpuRegister.Rsp] + sizeof(ulong), out extra);
-
-        if (!AppendKernelEventQueueRecord(ctx, commandBuffer, equeue, ident, filter, userData, data, extra))
+        if (!AppendKernelEventQueueRecord(
+                ctx,
+                commandBuffer,
+                equeue,
+                ident,
+                completionToken,
+                userData))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        TraceAmpr(ctx, "write_equeue", commandBuffer, equeue, ident);
+        TraceAmpr(ctx, "write_equeue", commandBuffer, ident, completionToken);
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -659,20 +663,17 @@ public static class AmprExports
         ulong commandBuffer,
         ulong equeue,
         ulong ident,
-        ulong filter,
-        ulong userData,
-        ulong data,
-        ulong extra)
+        ulong completionToken,
+        ulong userData)
     {
         Span<byte> record = stackalloc byte[(int)KernelEventQueueRecordSize];
         record.Clear();
         BinaryPrimitives.WriteUInt32LittleEndian(record[0x00..], KernelEventQueueRecordType);
-        BinaryPrimitives.WriteUInt32LittleEndian(record[0x04..], unchecked((uint)filter));
+        BinaryPrimitives.WriteInt16LittleEndian(record[0x04..], KernelEventQueueCompatExports.KernelEventFilterAmpr);
         BinaryPrimitives.WriteUInt64LittleEndian(record[0x08..], equeue);
         BinaryPrimitives.WriteUInt64LittleEndian(record[0x10..], ident);
         BinaryPrimitives.WriteUInt64LittleEndian(record[0x18..], userData);
-        BinaryPrimitives.WriteUInt64LittleEndian(record[0x20..], data);
-        BinaryPrimitives.WriteUInt64LittleEndian(record[0x28..], extra);
+        BinaryPrimitives.WriteUInt64LittleEndian(record[0x20..], completionToken);
 
         return AppendCommandBufferRecord(ctx, commandBuffer, record);
     }
@@ -778,7 +779,7 @@ public static class AmprExports
 
     private static void TraceAmpr(CpuContext ctx, string operation, ulong commandBuffer, ulong arg0, ulong arg1)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AMPR"), "1", StringComparison.Ordinal))
+        if (!_traceAmpr)
         {
             return;
         }
@@ -800,7 +801,7 @@ public static class AmprExports
         string? hostPath,
         int result)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AMPR"), "1", StringComparison.Ordinal))
+        if (!_traceAmpr)
         {
             return;
         }
