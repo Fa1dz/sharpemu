@@ -41,6 +41,11 @@
         "resolved": "2.23.0",
         "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
       },
+      "Silk.NET.Shaderc.Native": {
+        "type": "Transitive",
+        "resolved": "2.23.0",
+        "contentHash": "H6OMLIWdh2HITvkmj+ALs8LTIdQvQ2/JTtkDXinVbJ3xxrQIBXhVmc9jnuTQ67YDybGlENSMrgthzhLwK0rjnQ=="
+      },
       "Silk.NET.Windowing.Common": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -80,6 +85,7 @@
         "type": "Project",
         "dependencies": {
           "SharpEmu.HLE": "[1.0.0, )",
+          "Silk.NET.Shaderc": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )"
@@ -93,6 +99,16 @@
         "requested": "[1.21.0, )",
         "resolved": "1.21.0",
         "contentHash": "dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg=="
+      },
+      "Silk.NET.Shaderc": {
+        "type": "CentralTransitive",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "+pXfOhmSCeeMECOo9HMi3C63LVbQ7FBxPFgxPKOT6mXD8Gg/90Wt4fLX4LqUuVbGid5LW6BXAUu1g17XQoawdA==",
+        "dependencies": {
+          "Silk.NET.Core": "2.23.0",
+          "Silk.NET.Shaderc.Native": "2.23.0"
+        }
       },
       "Silk.NET.Vulkan": {
         "type": "CentralTransitive",
@@ -125,6 +141,11 @@
       }
     },
     "net10.0/linux-x64": {
+      "Silk.NET.Shaderc.Native": {
+        "type": "Transitive",
+        "resolved": "2.23.0",
+        "contentHash": "H6OMLIWdh2HITvkmj+ALs8LTIdQvQ2/JTtkDXinVbJ3xxrQIBXhVmc9jnuTQ67YDybGlENSMrgthzhLwK0rjnQ=="
+      },
       "Ultz.Native.GLFW": {
         "type": "Transitive",
         "resolved": "3.4.0",
@@ -132,6 +153,11 @@
       }
     },
     "net10.0/osx-arm64": {
+      "Silk.NET.Shaderc.Native": {
+        "type": "Transitive",
+        "resolved": "2.23.0",
+        "contentHash": "H6OMLIWdh2HITvkmj+ALs8LTIdQvQ2/JTtkDXinVbJ3xxrQIBXhVmc9jnuTQ67YDybGlENSMrgthzhLwK0rjnQ=="
+      },
       "Ultz.Native.GLFW": {
         "type": "Transitive",
         "resolved": "3.4.0",
@@ -139,6 +165,11 @@
       }
     },
     "net10.0/win-x64": {
+      "Silk.NET.Shaderc.Native": {
+        "type": "Transitive",
+        "resolved": "2.23.0",
+        "contentHash": "H6OMLIWdh2HITvkmj+ALs8LTIdQvQ2/JTtkDXinVbJ3xxrQIBXhVmc9jnuTQ67YDybGlENSMrgthzhLwK0rjnQ=="
+      },
       "Ultz.Native.GLFW": {
         "type": "Transitive",
         "resolved": "3.4.0",
