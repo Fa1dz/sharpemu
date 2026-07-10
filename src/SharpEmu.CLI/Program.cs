@@ -3,6 +3,7 @@
 
 using SharpEmu.Core.Runtime;
 using SharpEmu.Core.Cpu;
+using SharpEmu.GUI;
 using SharpEmu.HLE;
 using SharpEmu.Logging;
 using System.Runtime.InteropServices;
@@ -24,12 +25,32 @@ internal static partial class Program
     private const ulong PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_ALWAYS_OFF = 0x00000002UL << 28;
     private const ulong PROCESS_CREATION_MITIGATION_POLICY2_USER_CET_SET_CONTEXT_IP_VALIDATION_ALWAYS_OFF = 0x00000002UL << 32;
     private const ulong PROCESS_CREATION_MITIGATION_POLICY2_XTENDED_CONTROL_FLOW_GUARD_ALWAYS_OFF = 0x00000002UL << 40;
+    private const int ATTACH_PARENT_PROCESS = -1;
+    private const int STD_OUTPUT_HANDLE = -11;
+    private const int STD_ERROR_HANDLE = -12;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint OPEN_EXISTING = 3;
 
+    [STAThread]
     private static int Main(string[] args)
     {
+        args = NormalizeInternalArguments(args, out var isMitigatedChild);
+        if (args.Length == 0 && !isMitigatedChild)
+        {
+            // No arguments: open the desktop frontend. Any argument selects
+            // the classic CLI behavior below.
+            return GuiLauncher.Run();
+        }
+
+        // The executable uses the GUI subsystem, so CLI mode has to connect
+        // itself to a console before the first write.
+        EnsureCliConsole();
+
         Console.Error.WriteLine($"[DEBUG] SharpEmu starting with {args.Length} args");
 
-        args = NormalizeInternalArguments(args, out var isMitigatedChild);
         if (!isMitigatedChild && TryRunMitigatedChild(args, out var childExitCode))
         {
             return childExitCode;
@@ -99,6 +120,58 @@ internal static partial class Program
         }
 
         return result == OrbisGen2Result.ORBIS_GEN2_OK ? 0 : 4;
+    }
+
+    private static void EnsureCliConsole()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // Standard handles already provided (pipes or file redirection, e.g.
+        // when the GUI or a script launches us): use them as-is.
+        if (IsHandleValid(GetStdHandle(STD_OUTPUT_HANDLE)) && IsHandleValid(GetStdHandle(STD_ERROR_HANDLE)))
+        {
+            return;
+        }
+
+        // Prefer the console of the parent process (interactive terminal);
+        // create one only when started with arguments but no terminal at all
+        // (e.g. a shortcut), so usage and errors remain visible.
+        if (!AttachConsole(ATTACH_PARENT_PROCESS) && GetConsoleWindow() == 0)
+        {
+            _ = AllocConsole();
+        }
+
+        RebindStdHandleToConsole(STD_OUTPUT_HANDLE);
+        RebindStdHandleToConsole(STD_ERROR_HANDLE);
+    }
+
+    private static void RebindStdHandleToConsole(int stdHandle)
+    {
+        if (IsHandleValid(GetStdHandle(stdHandle)) || GetConsoleWindow() == 0)
+        {
+            return;
+        }
+
+        var conOut = CreateFileW(
+            "CONOUT$",
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            0,
+            OPEN_EXISTING,
+            0,
+            0);
+        if (IsHandleValid(conOut))
+        {
+            _ = SetStdHandle(stdHandle, conOut);
+        }
+    }
+
+    private static bool IsHandleValid(nint handle)
+    {
+        return handle != 0 && handle != -1;
     }
 
     private static string[] NormalizeInternalArguments(string[] args, out bool isMitigatedChild)
@@ -670,4 +743,32 @@ internal static partial class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(nint handle);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetConsoleWindow();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachConsole(int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AllocConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GetStdHandle(int stdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetStdHandle(int stdHandle, nint handle);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern nint CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        nint securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        nint templateFile);
 }
