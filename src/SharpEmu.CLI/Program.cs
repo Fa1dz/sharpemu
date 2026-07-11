@@ -60,6 +60,7 @@ internal static partial class Program
         // The executable uses the GUI subsystem, so CLI mode has to connect
         // itself to a console before the first write.
         EnsureCliConsole();
+        UseUtf8ConsoleOutput();
 
         Console.Error.WriteLine($"[DEBUG] SharpEmu starting with {args.Length} args");
 
@@ -160,6 +161,48 @@ internal static partial class Program
 
         RebindStdHandleToConsole(STD_OUTPUT_HANDLE);
         RebindStdHandleToConsole(STD_ERROR_HANDLE);
+    }
+
+    /// <summary>
+    /// Makes console writes UTF-8 so the GUI's pipe reader (and any modern
+    /// terminal) decodes non-ASCII text correctly. Without this, redirected
+    /// output falls back to the OS ANSI code page and characters like "—"
+    /// arrive mangled.
+    /// </summary>
+    private static void UseUtf8ConsoleOutput()
+    {
+        try
+        {
+            // Also recreates the redirected Console.Out/Error writers with
+            // the new encoding.
+            Console.OutputEncoding = Encoding.UTF8;
+            return;
+        }
+        catch (Exception)
+        {
+            // No attached console (GUI-subsystem child with piped output):
+            // wrap the raw handles instead.
+        }
+
+        if (Console.IsOutputRedirected)
+        {
+            Console.SetOut(new StreamWriter(
+                Console.OpenStandardOutput(),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+            {
+                AutoFlush = true,
+            });
+        }
+
+        if (Console.IsErrorRedirected)
+        {
+            Console.SetError(new StreamWriter(
+                Console.OpenStandardError(),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+            {
+                AutoFlush = true,
+            });
+        }
     }
 
     private static void RebindStdHandleToConsole(int stdHandle)

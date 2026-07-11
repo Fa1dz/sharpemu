@@ -23,6 +23,12 @@ public sealed class GuiSettings
 
     public bool StrictDynlibResolution { get; set; }
 
+    /// <summary>Mirror emulator output to user/logs/&lt;titleId&gt;-&lt;timestamp&gt;.log.</summary>
+    public bool LogToFile { get; set; }
+
+    /// <summary>Loop the selected game's sce_sys/snd0.at9 preview music.</summary>
+    public bool PlayTitleMusic { get; set; } = true;
+
     public string? EmulatorPath { get; set; }
 
     // The emulator is portable and keeps its data next to the executable;

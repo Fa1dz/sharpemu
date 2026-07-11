@@ -16,6 +16,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using SharpEmu.Libs.Pad;
+using SharpEmu.Logging;
 
 namespace SharpEmu.GUI;
 
@@ -38,6 +39,8 @@ public partial class MainWindow : Window
 
     private GuiSettings _settings = new();
     private EmulatorProcess? _emulator;
+    private StreamWriter? _fileLog;
+    private readonly SndPreviewPlayer _sndPreview = new();
     private string? _emulatorExePath;
     private bool _isRunning;
     private int _autoScrollTicks;
@@ -84,6 +87,7 @@ public partial class MainWindow : Window
         CopyLogButton.Click += async (_, _) => await CopyConsoleAsync();
         OptionsToggle.IsCheckedChanged += (_, _) => OptionsPanel.IsVisible = OptionsToggle.IsChecked == true;
         ConsoleToggle.IsCheckedChanged += (_, _) => ConsolePanel.IsVisible = ConsoleToggle.IsChecked == true;
+        TitleMusicToggle.IsCheckedChanged += (_, _) => OnTitleMusicToggled();
 
         GameList.AddHandler(ContextRequestedEvent, OnGameContextRequested, RoutingStrategies.Tunnel);
         CtxLaunch.Click += (_, _) => LaunchSelected();
@@ -98,6 +102,7 @@ public partial class MainWindow : Window
         Closing += (_, _) => OnWindowClosing();
 
         DualSenseReader.EnsureStarted();
+        XInputReader.EnsureStarted();
         _gamepadTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(50),
@@ -110,7 +115,8 @@ public partial class MainWindow : Window
 
     private void PollGamepad()
     {
-        if (!DualSenseReader.TryGetState(out var pad))
+        // DualSense wins when both are connected; XInput covers Xbox pads.
+        if (!DualSenseReader.TryGetState(out var pad) && !XInputReader.TryGetState(out pad))
         {
             _previousPadButtons = 0;
             return;
@@ -216,10 +222,15 @@ public partial class MainWindow : Window
     private async Task OnOpenedAsync()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version;
-        if (version is not null)
-        {
-            VersionText.Text = $"v{version.ToString(3)}";
-        }
+        var display = version is not null ? $"v{version.ToString(3)}" : "v0.0.1";
+        display += BuildInfo.CommitSha is null
+            ? " · dev"
+            : BuildInfo.IsOfficialRelease
+                ? $" · {BuildInfo.CommitSha}"
+                : $" · UNOFFICIAL {BuildInfo.CommitSha}";
+        VersionText.Text = display;
+        Title = $"SharpEmu {display}";
+        ToolTip.SetTip(VersionText, BuildInfo.Banner);
 
         _settings = GuiSettings.Load();
         ApplySettingsToControls();
@@ -233,7 +244,9 @@ public partial class MainWindow : Window
         _settings.Save();
         _consoleFlushTimer.Stop();
         _gamepadTimer.Stop();
+        _sndPreview.Stop();
         _emulator?.Dispose();
+        DropFileLog();
     }
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -260,6 +273,8 @@ public partial class MainWindow : Window
         };
         TraceImportsBox.Value = Math.Clamp(_settings.ImportTraceLimit, 0, 4096);
         StrictToggle.IsChecked = _settings.StrictDynlibResolution;
+        LogToFileToggle.IsChecked = _settings.LogToFile;
+        TitleMusicToggle.IsChecked = _settings.PlayTitleMusic;
     }
 
     private void ReadControlsIntoSettings()
@@ -267,6 +282,8 @@ public partial class MainWindow : Window
         _settings.LogLevel = SelectedLogLevel();
         _settings.ImportTraceLimit = (int)(TraceImportsBox.Value ?? 0);
         _settings.StrictDynlibResolution = StrictToggle.IsChecked == true;
+        _settings.LogToFile = LogToFileToggle.IsChecked == true;
+        _settings.PlayTitleMusic = TitleMusicToggle.IsChecked == true;
     }
 
     private string SelectedLogLevel()
@@ -778,6 +795,7 @@ public partial class MainWindow : Window
             SelectedGamePath.Text = game.Path;
             SelectedCoverPanel.DataContext = game;
             _ = UpdateBackdropAsync(game);
+            PlaySelectedGamePreview(game);
         }
         else
         {
@@ -785,9 +803,64 @@ public partial class MainWindow : Window
             SelectedGamePath.Text = "Pick a game from the library, or open an eboot.bin directly.";
             SelectedCoverPanel.DataContext = null;
             _ = UpdateBackdropAsync(null);
+            _sndPreview.Stop();
         }
 
         UpdateRunButtons();
+    }
+
+    /// <summary>
+    /// Loops the selected game's sce_sys/snd0.at9 preview music, console
+    /// home screen style. Silent while a game is running or when disabled
+    /// in the options.
+    /// </summary>
+    private void PlaySelectedGamePreview(GameEntry game)
+    {
+        if (_isRunning || !_settings.PlayTitleMusic)
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(game.Path);
+        var sndPath = directory is null ? null : Path.Combine(directory, "sce_sys", "snd0.at9");
+        if (sndPath is not null && File.Exists(sndPath))
+        {
+            _sndPreview.Play(sndPath);
+        }
+        else
+        {
+            _sndPreview.Stop();
+        }
+    }
+
+    private void OnTitleMusicToggled()
+    {
+        _settings.PlayTitleMusic = TitleMusicToggle.IsChecked == true;
+        if (!_settings.PlayTitleMusic)
+        {
+            _sndPreview.Stop();
+        }
+        else if (GameList.SelectedItem is GameEntry game)
+        {
+            PlaySelectedGamePreview(game);
+        }
+    }
+
+    /// <summary>Pauses the preview music while the window is minimized.</summary>
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == WindowStateProperty)
+        {
+            if (WindowState == WindowState.Minimized)
+            {
+                _sndPreview.Pause();
+            }
+            else
+            {
+                _sndPreview.Resume();
+            }
+        }
     }
 
     /// <summary>
@@ -855,11 +928,11 @@ public partial class MainWindow : Window
     {
         if (GameList.SelectedItem is GameEntry game)
         {
-            Launch(game.Path, game.Name);
+            Launch(game.Path, game.Name, game.TitleId);
         }
     }
 
-    private void Launch(string ebootPath, string displayName)
+    private void Launch(string ebootPath, string displayName, string? titleId = null)
     {
         if (_isRunning)
         {
@@ -876,6 +949,7 @@ public partial class MainWindow : Window
             }
         }
 
+        _sndPreview.Stop();
         ReadControlsIntoSettings();
         _settings.Save();
 
@@ -898,6 +972,23 @@ public partial class MainWindow : Window
 
         _consoleLines.Clear();
         ConsoleToggle.IsChecked = true;
+
+        // Mirror everything the console pane shows into a log file for the
+        // duration of the run, regardless of the emulator's log level.
+        DropFileLog();
+        if (_settings.LogToFile && BuildLogFilePath(titleId) is { } logFilePath)
+        {
+            try
+            {
+                _fileLog = new StreamWriter(logFilePath, append: false);
+                AppendConsoleLine($"Log file: {logFilePath}", DimLineBrush);
+            }
+            catch (Exception ex)
+            {
+                AppendConsoleLine($"Could not open the log file: {ex.Message}", WarningLineBrush);
+            }
+        }
+
         AppendConsoleLine($"$ SharpEmu {string.Join(' ', arguments)}", DimLineBrush);
 
         var emulator = new EmulatorProcess();
@@ -912,6 +1003,7 @@ public partial class MainWindow : Window
         {
             emulator.Dispose();
             AppendConsoleLine($"Failed to start the emulator: {ex.Message}", ErrorLineBrush);
+            DropFileLog();
             return;
         }
 
@@ -921,6 +1013,37 @@ public partial class MainWindow : Window
         StatusText.Text = $"Running — {displayName}";
         StatusBarRight.Text = $"Running {displayName}";
         UpdateRunButtons();
+    }
+
+    /// <summary>
+    /// Builds "user/logs/&lt;titleId&gt;-&lt;timestamp&gt;.log" next to the emulator
+    /// executable, following the same portable-data convention as savedata.
+    /// </summary>
+    private string? BuildLogFilePath(string? titleId)
+    {
+        try
+        {
+            var exeDirectory = Path.GetDirectoryName(_emulatorExePath);
+            if (string.IsNullOrEmpty(exeDirectory))
+            {
+                return null;
+            }
+
+            var logsDirectory = Path.Combine(exeDirectory, "user", "logs");
+            Directory.CreateDirectory(logsDirectory);
+
+            var id = string.IsNullOrWhiteSpace(titleId) ? "UNKNOWN" : titleId;
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+            {
+                id = id.Replace(invalid, '_');
+            }
+
+            return Path.Combine(logsDirectory, $"{id}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+        }
+        catch (Exception)
+        {
+            return null; // unwritable location: launch continues without a log file
+        }
     }
 
     private void OnEmulatorExited(int exitCode)
@@ -941,6 +1064,7 @@ public partial class MainWindow : Window
         };
         var brush = exitCode == 0 ? SuccessLineBrush : ErrorLineBrush;
         AppendConsoleLine($"Process exited with code {exitCode} ({meaning}).", brush);
+        CloseFileLogSoon();
 
         StatusDot.Fill = exitCode == 0 ? (IBrush)SuccessLineBrush : ErrorLineBrush;
         StatusText.Text = $"Exited with code {exitCode} ({meaning})";
@@ -967,8 +1091,11 @@ public partial class MainWindow : Window
         var incoming = new List<LogLine>();
         while (_pendingLines.TryDequeue(out var pending))
         {
+            WriteFileLog(pending.Line);
             incoming.Add(new LogLine(pending.Line, BrushForLine(pending.Line)));
         }
+
+        FlushFileLog();
 
         if (incoming.Count >= MaxConsoleLines)
         {
@@ -998,9 +1125,79 @@ public partial class MainWindow : Window
 
     private void AppendConsoleLine(string text, IBrush brush)
     {
+        WriteFileLog(text);
+        FlushFileLog();
         _consoleLines.Add(new LogLine(text, brush));
         _autoScrollTicks = 3;
         MaybeAutoScroll();
+    }
+
+    // ---- Console-to-file mirroring ----
+
+    private void WriteFileLog(string text)
+    {
+        if (_fileLog is not { } writer)
+        {
+            return;
+        }
+
+        try
+        {
+            writer.Write('[');
+            writer.Write(DateTime.Now.ToString("HH:mm:ss.fff"));
+            writer.Write("] ");
+            writer.WriteLine(text);
+        }
+        catch (Exception)
+        {
+            DropFileLog(); // unwritable (disk full, etc.): stop mirroring
+        }
+    }
+
+    private void FlushFileLog()
+    {
+        try
+        {
+            _fileLog?.Flush();
+        }
+        catch (Exception)
+        {
+            DropFileLog();
+        }
+    }
+
+    private void DropFileLog()
+    {
+        var writer = _fileLog;
+        _fileLog = null;
+        try
+        {
+            writer?.Dispose();
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The pipe reader threads can deliver a final burst after the exit
+    /// event, so the file stays open for one more flush cycle.
+    /// </summary>
+    private void CloseFileLogSoon()
+    {
+        if (_fileLog is not { } writer)
+        {
+            return;
+        }
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (ReferenceEquals(_fileLog, writer))
+            {
+                FlushPendingConsoleLines();
+                DropFileLog();
+            }
+        }, TimeSpan.FromMilliseconds(400));
     }
 
     private void MaybeAutoScroll()

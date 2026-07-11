@@ -244,9 +244,17 @@ SPDX-License-Identifier: GPL-2.0-or-later
               <NumericUpDown x:Name="TraceImportsBox" Width="170" Minimum="0" Maximum="4096" Increment="16"
                              Value="0" FormatString="0" CornerRadius="8" />
             </StackPanel>
-            <StackPanel>
+            <StackPanel Margin="0,0,24,0">
               <TextBlock Classes="fieldLabel" Text="Strict dynlib resolution" />
               <ToggleSwitch x:Name="StrictToggle" OnContent="On" OffContent="Off" />
+            </StackPanel>
+            <StackPanel Margin="0,0,24,0">
+              <TextBlock Classes="fieldLabel" Text="Log to file" />
+              <ToggleSwitch x:Name="LogToFileToggle" OnContent="On" OffContent="Off" />
+            </StackPanel>
+            <StackPanel>
+              <TextBlock Classes="fieldLabel" Text="Title music" />
+              <ToggleSwitch x:Name="TitleMusicToggle" OnContent="On" OffContent="Off" IsChecked="True" />
             </StackPanel>
           </WrapPanel>
         </StackPanel>

@@ -12,8 +12,14 @@ public static class SharpEmuLog
         new(StringComparer.Ordinal);
     private static readonly object ConfigurationSync = new();
     private static volatile LogLevel _minimumLevel = ResolveMinimumLevelFromEnvironment();
+    private static bool _fileCapturesAllLevels;
     private static ISharpEmuLogSink _sink = ResolveSinkFromEnvironment();
 
+    /// <summary>
+    /// Entries below this level are dropped. When a SHARPEMU_LOG_FILE sink is
+    /// active it only limits the console — the file receives every level.
+    /// <see cref="LogLevel.None"/> disables logging entirely, file included.
+    /// </summary>
     public static LogLevel MinimumLevel
     {
         get => _minimumLevel;
@@ -39,6 +45,11 @@ public static class SharpEmuLog
                 {
                     return;
                 }
+
+                // A replacement sink is not the environment-configured
+                // console+file pair, so the minimum level applies globally
+                // again.
+                _fileCapturesAllLevels = false;
 
                 if (_sink is IDisposable disposable)
                 {
@@ -122,7 +133,14 @@ public static class SharpEmuLog
     internal static bool IsEnabled(LogLevel level)
     {
         var minimum = _minimumLevel;
-        return minimum != LogLevel.None && level >= minimum;
+        if (minimum == LogLevel.None)
+        {
+            return false;
+        }
+
+        // With a file sink capturing all levels, the console filter is
+        // applied per-sink instead of here.
+        return _fileCapturesAllLevels || level >= minimum;
     }
 
     internal static void Write(
@@ -187,7 +205,10 @@ public static class SharpEmuLog
             try
             {
                 var fileSink = new FileLogSink(logFilePath, append: true, includeTimestamp: true);
-                return new CompositeLogSink(consoleSink, fileSink);
+                // The file gets every level; the configured minimum only
+                // limits what reaches the console.
+                _fileCapturesAllLevels = true;
+                return new CompositeLogSink(new MinimumLevelFilterSink(consoleSink), fileSink);
             }
             catch (Exception ex)
             {
@@ -197,6 +218,25 @@ public static class SharpEmuLog
         }
 
         return consoleSink;
+    }
+
+    /// <summary>
+    /// Forwards only entries at or above <see cref="MinimumLevel"/>. Wraps
+    /// the console sink when a file sink captures all levels.
+    /// </summary>
+    private sealed class MinimumLevelFilterSink : ISharpEmuLogSink
+    {
+        private readonly ISharpEmuLogSink _inner;
+
+        internal MinimumLevelFilterSink(ISharpEmuLogSink inner) => _inner = inner;
+
+        public void Write(in LogEntry entry)
+        {
+            if (entry.Level >= _minimumLevel)
+            {
+                _inner.Write(in entry);
+            }
+        }
     }
 
     private static bool IsTrueLike(string? text)

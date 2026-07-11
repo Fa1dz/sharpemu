@@ -6,21 +6,6 @@ using Microsoft.Win32.SafeHandles;
 namespace SharpEmu.Libs.Pad;
 
 /// <summary>
-/// Snapshot of the DualSense state, already translated to ORBIS pad
-/// conventions (SCE_PAD_BUTTON bits; sticks 0..255 with 128 centered;
-/// triggers 0..255).
-/// </summary>
-internal readonly record struct DualSenseState(
-    bool Connected,
-    uint Buttons,
-    byte LeftX,
-    byte LeftY,
-    byte RightX,
-    byte RightY,
-    byte L2,
-    byte R2);
-
-/// <summary>
 /// Reads a DualSense controller over raw HID on a background thread.
 /// Supports USB (input report 0x01) and Bluetooth (extended report 0x31,
 /// activated by requesting feature report 0x05), with hot-plug retry.
@@ -31,26 +16,8 @@ internal static class DualSenseReader
     private const ushort DualSenseProductId = 0x0CE6;
     private const ushort DualSenseEdgeProductId = 0x0DF2;
 
-    // SCE_PAD_BUTTON bit values.
-    private const uint ButtonL3 = 0x0002;
-    private const uint ButtonR3 = 0x0004;
-    private const uint ButtonOptions = 0x0008;
-    private const uint ButtonUp = 0x0010;
-    private const uint ButtonRight = 0x0020;
-    private const uint ButtonDown = 0x0040;
-    private const uint ButtonLeft = 0x0080;
-    private const uint ButtonL2 = 0x0100;
-    private const uint ButtonR2 = 0x0200;
-    private const uint ButtonL1 = 0x0400;
-    private const uint ButtonR1 = 0x0800;
-    private const uint ButtonTriangle = 0x1000;
-    private const uint ButtonCircle = 0x2000;
-    private const uint ButtonCross = 0x4000;
-    private const uint ButtonSquare = 0x8000;
-    private const uint ButtonTouchPad = 0x100000;
-
     private static readonly object Gate = new();
-    private static DualSenseState _state;
+    private static PadState _state;
     private static bool _started;
 
     // Output (rumble/lightbar) state, all guarded by Gate.
@@ -92,7 +59,7 @@ internal static class DualSenseReader
         }
     }
 
-    internal static bool TryGetState(out DualSenseState state)
+    internal static bool TryGetState(out PadState state)
     {
         lock (Gate)
         {
@@ -102,7 +69,7 @@ internal static class DualSenseReader
         return state.Connected;
     }
 
-    private static void SetState(in DualSenseState state)
+    private static void SetState(in PadState state)
     {
         lock (Gate)
         {
@@ -399,7 +366,7 @@ internal static class DualSenseReader
         return null;
     }
 
-    private static bool TryParseReport(ReadOnlySpan<byte> report, out DualSenseState state)
+    private static bool TryParseReport(ReadOnlySpan<byte> report, out PadState state)
     {
         // USB: report id 0x01, payload starts at [1].
         // Bluetooth extended: report id 0x31, sequence byte at [1], payload at [2].
@@ -429,21 +396,21 @@ internal static class DualSenseReader
         var buttons2 = report[offset + 9];
 
         uint buttons = 0;
-        buttons |= (buttons0 & 0x10) != 0 ? ButtonSquare : 0;
-        buttons |= (buttons0 & 0x20) != 0 ? ButtonCross : 0;
-        buttons |= (buttons0 & 0x40) != 0 ? ButtonCircle : 0;
-        buttons |= (buttons0 & 0x80) != 0 ? ButtonTriangle : 0;
+        buttons |= (buttons0 & 0x10) != 0 ? OrbisPadButton.Square : 0;
+        buttons |= (buttons0 & 0x20) != 0 ? OrbisPadButton.Cross : 0;
+        buttons |= (buttons0 & 0x40) != 0 ? OrbisPadButton.Circle : 0;
+        buttons |= (buttons0 & 0x80) != 0 ? OrbisPadButton.Triangle : 0;
         buttons |= HatToButtons(buttons0 & 0x0F);
-        buttons |= (buttons1 & 0x01) != 0 ? ButtonL1 : 0;
-        buttons |= (buttons1 & 0x02) != 0 ? ButtonR1 : 0;
-        buttons |= (buttons1 & 0x04) != 0 ? ButtonL2 : 0;
-        buttons |= (buttons1 & 0x08) != 0 ? ButtonR2 : 0;
-        buttons |= (buttons1 & 0x20) != 0 ? ButtonOptions : 0;
-        buttons |= (buttons1 & 0x40) != 0 ? ButtonL3 : 0;
-        buttons |= (buttons1 & 0x80) != 0 ? ButtonR3 : 0;
-        buttons |= (buttons2 & 0x02) != 0 ? ButtonTouchPad : 0;
+        buttons |= (buttons1 & 0x01) != 0 ? OrbisPadButton.L1 : 0;
+        buttons |= (buttons1 & 0x02) != 0 ? OrbisPadButton.R1 : 0;
+        buttons |= (buttons1 & 0x04) != 0 ? OrbisPadButton.L2 : 0;
+        buttons |= (buttons1 & 0x08) != 0 ? OrbisPadButton.R2 : 0;
+        buttons |= (buttons1 & 0x20) != 0 ? OrbisPadButton.Options : 0;
+        buttons |= (buttons1 & 0x40) != 0 ? OrbisPadButton.L3 : 0;
+        buttons |= (buttons1 & 0x80) != 0 ? OrbisPadButton.R3 : 0;
+        buttons |= (buttons2 & 0x02) != 0 ? OrbisPadButton.TouchPad : 0;
 
-        state = new DualSenseState(
+        state = new PadState(
             Connected: true,
             Buttons: buttons,
             LeftX: leftX,
@@ -457,14 +424,14 @@ internal static class DualSenseReader
 
     private static uint HatToButtons(int hat) => hat switch
     {
-        0 => ButtonUp,
-        1 => ButtonUp | ButtonRight,
-        2 => ButtonRight,
-        3 => ButtonRight | ButtonDown,
-        4 => ButtonDown,
-        5 => ButtonDown | ButtonLeft,
-        6 => ButtonLeft,
-        7 => ButtonLeft | ButtonUp,
+        0 => OrbisPadButton.Up,
+        1 => OrbisPadButton.Up | OrbisPadButton.Right,
+        2 => OrbisPadButton.Right,
+        3 => OrbisPadButton.Right | OrbisPadButton.Down,
+        4 => OrbisPadButton.Down,
+        5 => OrbisPadButton.Down | OrbisPadButton.Left,
+        6 => OrbisPadButton.Left,
+        7 => OrbisPadButton.Left | OrbisPadButton.Up,
         _ => 0,
     };
 }
