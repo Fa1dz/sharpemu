@@ -6010,7 +6010,7 @@ public static partial class KernelMemoryCompatExports
         return highWaterMark;
     }
 
-    private static bool TryReadHostMemory(ulong address, Span<byte> destination)
+    private static unsafe bool TryReadHostMemory(ulong address, Span<byte> destination)
     {
         if (destination.IsEmpty || !IsHostRangeAccessible(address, (ulong)destination.Length, writeAccess: false))
         {
@@ -6019,9 +6019,7 @@ public static partial class KernelMemoryCompatExports
 
         try
         {
-            var temporary = new byte[destination.Length];
-            Marshal.Copy((nint)address, temporary, 0, temporary.Length);
-            temporary.AsSpan().CopyTo(destination);
+            new ReadOnlySpan<byte>((void*)address, destination.Length).CopyTo(destination);
             return true;
         }
         catch
@@ -6059,6 +6057,41 @@ public static partial class KernelMemoryCompatExports
         }
 
         return false;
+    }
+
+    internal static bool TryReadShaderGuestMemory(
+        ulong address,
+        Span<byte> destination)
+    {
+        if (destination.IsEmpty)
+        {
+            return true;
+        }
+
+        if (TryReadTrackedLibcHeap(address, destination))
+        {
+            return true;
+        }
+
+        var length = (ulong)destination.Length;
+        lock (_memoryGate)
+        {
+            if (TryFindVirtualQueryRegionLocked(
+                    address,
+                    findNext: false,
+                    out var region) &&
+                length <= region.Length &&
+                address >= region.Address &&
+                length <= region.Address + region.Length - address)
+            {
+                return TryReadHostMemory(address, destination);
+            }
+        }
+
+        // Direct execution uses guest virtual addresses as host virtual addresses.
+        // Some native mmap paths predate _mappedRegions tracking, so retain the same
+        // committed/readable-page fallback used by the libc compatibility layer.
+        return TryReadHostMemory(address, destination);
     }
 
     internal static bool TryReadTrackedLibcHeapGpuAlias(
@@ -6340,7 +6373,7 @@ public static partial class KernelMemoryCompatExports
         return value != 0 && (value & (value - 1)) == 0;
     }
 
-    private static bool TryWriteHostMemory(ulong address, ReadOnlySpan<byte> source)
+    private static unsafe bool TryWriteHostMemory(ulong address, ReadOnlySpan<byte> source)
     {
         if (source.IsEmpty || !IsHostRangeAccessible(address, (ulong)source.Length, writeAccess: true))
         {
@@ -6349,8 +6382,7 @@ public static partial class KernelMemoryCompatExports
 
         try
         {
-            var temporary = source.ToArray();
-            Marshal.Copy(temporary, 0, (nint)address, temporary.Length);
+            source.CopyTo(new Span<byte>((void*)address, source.Length));
             return true;
         }
         catch
@@ -6377,20 +6409,37 @@ public static partial class KernelMemoryCompatExports
             return false;
         }
 
-        if (!TryQueryHostPage(address, out var startInfo) || !HasRequiredProtection(startInfo.Protect, writeAccess))
-        {
-            return false;
-        }
-
         var endAddress = address + length - 1;
-        if (endAddress == address)
+        var currentAddress = address;
+        while (currentAddress <= endAddress)
         {
-            return true;
-        }
+            if (!TryQueryHostPage(currentAddress, out var info) ||
+                !HasRequiredProtection(info.Protect, writeAccess))
+            {
+                return false;
+            }
 
-        if (!TryQueryHostPage(endAddress, out var endInfo) || !HasRequiredProtection(endInfo.Protect, writeAccess))
-        {
-            return false;
+            var regionBase = unchecked((ulong)info.BaseAddress);
+            var regionSize = (ulong)info.RegionSize;
+            if (regionSize == 0 ||
+                regionBase > currentAddress ||
+                ulong.MaxValue - regionBase < regionSize)
+            {
+                return false;
+            }
+
+            var regionEnd = regionBase + regionSize;
+            if (regionEnd <= currentAddress)
+            {
+                return false;
+            }
+
+            if (regionEnd > endAddress)
+            {
+                return true;
+            }
+
+            currentAddress = regionEnd;
         }
 
         return true;

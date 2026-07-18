@@ -568,6 +568,8 @@ public static partial class AgcExports
         public ulong WorkSequence { get; set; }
         public ulong SubmissionSequence { get; set; }
         public bool WaitMonitorRunning { get; set; }
+        public object WaitMonitorSignalGate { get; } = new();
+        public long WaitMonitorSignalVersion { get; set; }
     }
 
     private readonly record struct RegisteredAgcResource(
@@ -3313,23 +3315,10 @@ public static partial class AgcExports
                         length,
                         op,
                         out var dispatch,
-                        out var indirectDimsRetryAddress))
+                        out _))
                 {
                     state.FrameDispatchCount++;
                     ObserveComputeDispatch(ctx, gpuState, state, dispatch);
-                }
-                else if (indirectDimsRetryAddress != 0 &&
-                         HandleSubmittedIndirectDimsWait(
-                             ctx,
-                             state,
-                             commandAddress,
-                             currentAddress,
-                             offset,
-                             dwordCount,
-                             indirectDimsRetryAddress,
-                             tracePackets))
-                {
-                    return true; // suspend until the producer computes the dims
                 }
             }
 
@@ -3668,27 +3657,11 @@ public static partial class AgcExports
         void CompleteAndWake()
         {
             CompleteLabelProducer(producer);
-            if (GpuWaitRegistry.Count == 0)
+            lock (gpuState.WaitMonitorSignalGate)
             {
-                return;
+                gpuState.WaitMonitorSignalVersion++;
+                Monitor.Pulse(gpuState.WaitMonitorSignalGate);
             }
-
-            // Resuming a DCB can enqueue another compute dispatch and wait for
-            // it. Never do that reentrantly on the Vulkan render thread.
-            ThreadPool.UnsafeQueueUserWorkItem(
-                static state =>
-                {
-                    var (resumeContext, resumeGpuState) = state;
-                    lock (resumeGpuState.Gate)
-                    {
-                        DrainResumableDcbs(
-                            resumeContext,
-                            resumeGpuState,
-                            tracePackets: _traceAgc);
-                    }
-                },
-                (ctx, gpuState),
-                preferLocal: false);
         }
 
         void ApplyAndQueueCompletion()
@@ -4867,38 +4840,45 @@ public static partial class AgcExports
         SubmittedGpuState gpuState)
     {
         var delayMilliseconds = 1;
+        long observedSignal;
+        lock (gpuState.WaitMonitorSignalGate)
+        {
+            observedSignal = gpuState.WaitMonitorSignalVersion;
+        }
+
         while (true)
         {
-            var madeProgress = false;
+            int resumed;
+            int remaining;
             lock (gpuState.Gate)
             {
-                var before = GpuWaitRegistry.CountForMemory(ctx.Memory);
-                if (before == 0)
-                {
-                    gpuState.WaitMonitorRunning = false;
-                    return;
-                }
-
-                DrainResumableDcbs(ctx, gpuState, tracePackets: _traceAgc);
-                var after = GpuWaitRegistry.CountForMemory(ctx.Memory);
-                madeProgress = after < before;
-                if (madeProgress)
+                resumed = DrainResumableDcbs(ctx, gpuState, tracePackets: _traceAgc);
+                remaining = GpuWaitRegistry.CountForMemory(ctx.Memory);
+                if (_traceAgc && resumed != 0)
                 {
                     Console.Error.WriteLine(
-                        $"[LOADER][TRACE] agc.wait_monitor_resumed count={before - after} " +
-                        $"remaining={after}");
+                        $"[LOADER][TRACE] agc.wait_monitor_resumed count={resumed} " +
+                        $"remaining={remaining}");
                 }
-                if (after == 0)
+                if (remaining == 0)
                 {
                     gpuState.WaitMonitorRunning = false;
                     return;
                 }
             }
 
-            delayMilliseconds = madeProgress
+            delayMilliseconds = resumed != 0
                 ? 1
                 : Math.Min(delayMilliseconds * 2, 16);
-            Thread.Sleep(delayMilliseconds);
+            lock (gpuState.WaitMonitorSignalGate)
+            {
+                if (gpuState.WaitMonitorSignalVersion == observedSignal)
+                {
+                    Monitor.Wait(gpuState.WaitMonitorSignalGate, delayMilliseconds);
+                }
+
+                observedSignal = gpuState.WaitMonitorSignalVersion;
+            }
         }
     }
 
@@ -4952,16 +4932,17 @@ public static partial class AgcExports
     // guest memory (labels are advanced by ReleaseMem/WriteData/DmaData packets
     // or direct CPU writes) and resumes the ones now satisfied. A resumed DCB
     // can itself write labels that unblock others, so loop to a fixed point.
-    private static void DrainResumableDcbs(
+    private static int DrainResumableDcbs(
         CpuContext ctx,
         SubmittedGpuState gpuState,
         bool tracePackets)
     {
         if (!_gpuWaitSuspendEnabled)
         {
-            return;
+            return 0;
         }
 
+        var resumedCount = 0;
         for (var pass = 0; pass < 256; pass++)
         {
             var woken = GpuWaitRegistry.CollectSatisfied(ctx.Memory, (address, is64Bit) =>
@@ -5039,7 +5020,7 @@ public static partial class AgcExports
                     }
                 }
 
-                return;
+                return resumedCount;
             }
 
             if (woken is not null)
@@ -5047,9 +5028,12 @@ public static partial class AgcExports
                 foreach (var waiter in woken)
                 {
                     ResumeSuspendedDcb(ctx, gpuState, waiter, tracePackets);
+                    resumedCount++;
                 }
             }
         }
+
+        return resumedCount;
     }
 
     private static void ResumeSuspendedDcb(
@@ -8894,7 +8878,7 @@ public static partial class AgcExports
                     out _);
                 var globalMemoryBuffers =
                     CreateTranslatedComputeGlobalBuffers(evaluation);
-                var workSequence = GuestGpu.Current.SubmitComputeDispatch(
+                GuestGpu.Current.SubmitComputeDispatch(
                     shaderAddress,
                     computeShader,
                     textures,
@@ -8913,12 +8897,9 @@ public static partial class AgcExports
                     dispatch.ThreadCountX,
                     dispatch.ThreadCountY,
                     dispatch.ThreadCountZ);
+                // Vulkan queue order keeps dependent dispatches coherent. CPU visibility is
+                // published by explicit PM4 release/write actions instead of per dispatch.
                 gpuDispatch = true;
-                if (writesGlobalMemory &&
-                    !GuestGpu.Current.WaitForGuestWork(workSequence))
-                {
-                    computeError = $"global-write-sync-timeout sequence={workSequence}";
-                }
             }
         }
 
