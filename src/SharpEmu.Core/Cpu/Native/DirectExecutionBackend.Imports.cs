@@ -69,6 +69,15 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe static int RawVectoredHandlerManaged(void* exceptionInfo)
 	{
+		EXCEPTION_RECORD* exceptionRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ExceptionRecord;
+		if (exceptionRecord->ExceptionCode == 3221225477u &&
+			exceptionRecord->NumberParameters >= 2 &&
+			SharpEmu.HLE.GuestImageWriteTracker.TryHandleWriteFault(
+				exceptionRecord->ExceptionInformation[1]))
+		{
+			return -1;
+		}
+
 		return TryRecoverUnresolvedSentinel(exceptionInfo);
 	}
 
@@ -2168,25 +2177,18 @@ public sealed partial class DirectExecutionBackend
 		}
 
 		var symbolNameAddress = cpuContext[CpuRegister.Rdi];
-		var outputAddress = cpuContext[CpuRegister.Rsi];
 		if (!TryReadAsciiZ(symbolNameAddress, 512, out var symbolName) ||
-			outputAddress == 0 ||
-			!TryResolveIl2CppApiAddress(symbolName, out var resolvedAddress) ||
-			!TryWriteUInt64Compat(outputAddress, resolvedAddress))
+			!TryResolveIl2CppApiAddress(symbolName, out var resolvedAddress))
 		{
 			Console.Error.WriteLine(
-				$"[LOADER][WARN] il2cpp_api_lookup_symbol failed: name='{symbolName}' out=0x{outputAddress:X16}");
-			if (outputAddress != 0)
-			{
-				_ = TryWriteUInt64Compat(outputAddress, 0);
-			}
-
-			cpuContext[CpuRegister.Rax] = ulong.MaxValue;
-			return OrbisGen2Result.ORBIS_GEN2_OK;
+				$"[LOADER][WARN] il2cpp_api_lookup_symbol failed: name='{symbolName}'");
+			// il2cpp_api_lookup_symbol is a normal one-argument pointer-returning
+			// function. In particular, RSI is not an output pointer; the title's
+			// caller leaves it live from an earlier call. Do not write through it.
+			return Il2CppApiLookupAbi.SetResult(cpuContext, resolved: false, address: 0);
 		}
 
-		cpuContext[CpuRegister.Rax] = 0;
-		return OrbisGen2Result.ORBIS_GEN2_OK;
+		return Il2CppApiLookupAbi.SetResult(cpuContext, resolved: true, resolvedAddress);
 	}
 
 	private bool TryResolveIl2CppApiAddress(string symbolName, out ulong address)
@@ -2196,8 +2198,23 @@ public sealed partial class DirectExecutionBackend
 			return true;
 		}
 
-		return Aerolib.Instance.TryGetByExportName(symbolName, out var symbol) &&
-			TryResolveRuntimeSymbolAddress(symbol.Nid, out address);
+		if (Aerolib.Instance.TryGetByExportName(symbolName, out var symbol) &&
+			TryResolveRuntimeSymbolAddress(symbol.Nid, out address))
+		{
+			return true;
+		}
+
+		// Unity's IL2CPP API table is populated through this resolver, then the
+		// returned pointers are called directly by the title. Use the callable
+		// zero-return stub for missing APIs rather than a non-callable sentinel.
+		if (symbolName.StartsWith("il2cpp_", StringComparison.Ordinal) &&
+			_unresolvedReturnStub != 0)
+		{
+			address = (ulong)_unresolvedReturnStub;
+			return true;
+		}
+
+		return false;
 	}
 
 	private OrbisGen2Result DispatchBootstrapBridge()
