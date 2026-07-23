@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 liam <liam.herron@hotmial.com>
+#
+# SPDX-License-Identifier: MIT
+
 name: Qodo Merge AI Reviewer
 
 on:
