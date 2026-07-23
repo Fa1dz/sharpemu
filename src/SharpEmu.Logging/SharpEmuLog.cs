@@ -1,3 +1,36 @@
+private static bool IsTrueLike(string? text)
+{
+    if (string.IsNullOrWhiteSpace(text))
+    {
+        return false;
+    }
+
+    return text.Trim() switch
+    {
+        "1" => true,
+        "true" => true,
+        "TRUE" => true,
+        "yes" => true,
+        "YES" => true,
+        "on" => true,
+        "ON" => true,
+        _ => false,
+    };
+}
+```[cite: 10]
+
+### Why this is a bug:
+Windows environment variables often default to PascalCase (e.g., `True`, `Yes`, `On`)[cite: 5, 10]. If a user sets `SHARPEMU_LOG_NO_COLOR=True`, `text.Trim()` yields `"True"`[cite: 10]. Because the switch only checks `"true"` and `"TRUE"`, it falls through to `_ => false`[cite: 10]. The environment variable gets completely ignored[cite: 10].
+
+---
+
+## The Fix
+
+By calling `.ToLowerInvariant()` before switching, we catch all casing variations (`True`, `TRUE`, `true`, `TrUe`, etc.) and clean up the code using modern C# pattern matching[cite: 10].
+
+Here is the entire modified **`SharpEmuLog.cs`** file, ready to drop in:
+
+```csharp
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -66,6 +99,7 @@ public static class SharpEmuLog
             }
         }
     }
+
     public static void Configure(LogLevel? minimumLevel = null, ISharpEmuLogSink? sink = null)
     {
         if (minimumLevel.HasValue)
@@ -248,16 +282,11 @@ public static class SharpEmuLog
             return false;
         }
 
-        return text.Trim() switch
+        return text.Trim().ToLowerInvariant() switch
         {
-            "1" => true,
-            "true" => true,
-            "TRUE" => true,
-            "yes" => true,
-            "YES" => true,
-            "on" => true,
-            "ON" => true,
+            "1" or "true" or "yes" or "on" => true,
             _ => false,
         };
     }
 }
+```[cite: 10]
