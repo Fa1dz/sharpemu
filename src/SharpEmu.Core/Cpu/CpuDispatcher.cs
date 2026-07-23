@@ -39,9 +39,17 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         public const int MaxRetryAttempts = 32;
     }
 
-    private static readonly byte[] BootstrapStubBytes = new byte[CpuLayout.BootstrapRegionSize] { 0xCC, 0xC3 };
-    private static readonly byte[] DynlibFallbackStubBytes = new byte[CpuLayout.BootstrapRegionSize] { 0x31, 0xC0, 0xC3 };
-    private static readonly byte[] ReturnToHostStubBytes = new byte[CpuLayout.BootstrapRegionSize] { 0xF4, 0xCC };
+    // Stub arrays – allocate full size and fill the first few bytes.
+    private static readonly byte[] BootstrapStubBytes = CreateStub(0xCC, 0xC3);
+    private static readonly byte[] DynlibFallbackStubBytes = CreateStub(0x31, 0xC0, 0xC3);
+    private static readonly byte[] ReturnToHostStubBytes = CreateStub(0xF4, 0xCC);
+
+    private static byte[] CreateStub(params byte[] bytes)
+    {
+        var arr = new byte[CpuLayout.BootstrapRegionSize];
+        Array.Copy(bytes, 0, arr, 0, bytes.Length);
+        return arr;
+    }
 
     private static readonly byte[] BootstrapStartSignature = new byte[]
     {
