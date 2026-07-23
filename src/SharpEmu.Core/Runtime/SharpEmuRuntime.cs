@@ -84,7 +84,7 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime, IDisposable
 
         var virtualMemory = new PhysicalVirtualMemory();
         var fileSystem = new PhysicalFileSystem();
-        var logger = NullLogger<CpuDispatcher>.Instance;
+        var logger = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.None)).CreateLogger<CpuDispatcher>();
         var nativeBackend = new DirectExecutionBackend(moduleManager);
 
         return new SharpEmuRuntime(
